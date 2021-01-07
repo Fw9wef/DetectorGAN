@@ -1,0 +1,12 @@
+lambda_ABA = 10.                # cycle loss lambda for A->B->A domain transformation
+lambda_BAB = 10.                # cycle loss lambda for B->A->B domain transformation
+lambda_local = 1.               # loss lambda for local generator
+GPU_IDS = []                    # GPU indices for model training if [] -> using CPU
+pool_size = 50                  # image pool size
+max_crop_side = 50              # maximum crop size in pixels
+decay_start = 5000              # epochs to start learning rate decay
+epochs_to_zero_lr = 5000        # epochs num to zero lr (decay_start + epochs_to_zero_lr)
+warmup_epochs = 0               # warmup epochs (if learning continues from a given epoch number)
+path_to_experiment = './exp'    # path to experiment savings
+path_to_data = './imgs'         # path to image data
+path_to_annotation = './ann'    # path to image annotation

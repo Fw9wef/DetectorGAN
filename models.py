@@ -1,4 +1,6 @@
 import functools
+from utils import iou
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -257,7 +259,8 @@ class GAN(nn.Module):
         self.fake_drones = torch.zeros(self.real_A.shape[0], 3, self.max_crop_side, self.max_crop_side,
                                        device=self.device)
 
-    def forward(self):
+    def forward(self, input_):
+        self.get_inputs(input_)
         self.fake_A = self.netG_A(self.real_B_with_windows)
         self.rest_B = self.netG_B(torch.cat([self.fake_A, self.B_windows], dim=1))
         self.real_drones = self.crop_drones((self.real_B_with_windows, self.real_drones))
@@ -271,8 +274,7 @@ class GAN(nn.Module):
             scheduler.step()
 
     def iteration(self, input_):
-        self.get_inputs(input_)
-        self.forward()
+        self.forward(input_)
         loss_dict = dict()
 
         # backward for D_A
@@ -326,6 +328,123 @@ class GAN(nn.Module):
         return loss_dict
 
 
+class DetectionLayer(nn.Module):
+    def __init__(self, n_layers, n_classes=settings.n_classes):
+        super(DetectionLayer, self).__init__()
+        self.classifier = nn.Sequential(nn.Conv2d(n_classes+1, n_layers, kernel_size=1), nn.Softmax(dim=1))
+        self.detector = nn.Sequential(nn.Conv2d(4, n_layers, kernel_size=1), nn.Tanh())
+
+    def forward(self, input_):
+        return {'clf': self.classifier(input_), 'reg': self.detector(input_)}
+
+
+class DetectorCriterion(nn.Module):
+    def __init__(self, priors, negative_ratio=settings.negative_ratio, n_classes=settings.n_classes, reg_alpha = settings.reg_alpha):
+        super(DetectorCriterion, self).__init__()
+        self.priors = torch.cat([prior.reshape(-1, 4) for prior in priors], dim=0)
+        self.negative_ratio = negative_ratio
+        self.n_classes = n_classes + 1
+        self.reg_alpha = reg_alpha
+        self.clf_criterion = nn.NLLLoss(reduction='none')
+        self.reg_criterion = nn.MSELoss(reduction='mean')
+
+    def forward(self, input_, target_):
+        clf_loss = reg_loss = 0
+
+        clf_preds = torch.cat([x['clf'].permute(0, 2, 3, 1).reshape(target_.shape[0], -1, self.n_classes) for x in input_], dim=0)
+        reg_preds = torch.cat([x['reg'].permute(0, 2, 3, 1).reshape(target_.shape[0], -1, 4) for x in input_], dim=0)
+
+        for img_n, (objects_, clf_, reg_) in enumerate(zip(target_, clf_preds, reg_preds)):
+            prior_objects_iou = iou(self.priors, objects_) # (n_objects, n_prior_boxies)
+            _, best_iou_inds = prior_objects_iou.max(dim=1)
+            prior_objects_iou[best_iou_inds] = 1.
+            _, objects_for_each_prior = prior_objects_iou.max(dim=0)
+            targets_for_each_prior
+            positives = targets_for_each_prior > 0
+            negatives = torch.logical_not(positives)
+            n_positives = positives.sum()
+            n_negatives = self.negative_ratio * n_positives
+
+            # calculating positives loss for image
+            pos_clf_preds, pos_reg_preds = clf_[positives], reg_[positives]
+            pos_clf_targets = targets_for_each_prior[positives]
+            clf_loss += torch.mean(self.clf_criterion(pos_clf_preds, pos_clf_targets.long()))
+            reg_loss += self.reg_criterion()    ###############
+
+            # calculating negatives loss for image
+            neg_clf_preds, neg_reg_preds = clf_[negatives], reg_[negatives]
+            neg_clf_targets = targets_for_each_prior[negatives]
+            neg_clf_loss, _ = self.clf_criterion().sort(descending=True)
+            clf_loss += neg_clf_loss[:n_negatives]
+
+        clf_loss /= target_.shape[0]
+        reg_loss /= target_.shape[0]
+        loss = clf_loss + self.reg_alpha * reg_loss
+        return loss
+
+
 class Detector(nn.Module):
-    def __init__(self):
+    def __init__(self, load_pretrained_detector = settings.load_pretrained_detector):
         super(Detector, self).__init__()
+        from torchvision.models import resnet34
+        resnet_conv_layers = list(resnet34(pretrained = load_pretrained_detector).children())[-2]
+
+        # define backbone
+        self.backbone = nn.Sequential(*resnet_conv_layers[:-1])
+
+        test_input = torch.rand((1, 3, 256, 256))
+        test_input = self.backbone(test_input)
+
+        # define detection layers
+        self.priors = self.get_priors(16, [0.2]) + self.get_priors(8, [0.4])
+        self.detector16 = []
+        for _ in self.priors16:
+            self.detector16.append(DetectionLayer(test_input.shape[1]))
+
+        self.downsample = resnet_conv_layers[-1]
+        test_input = self.downsample(test_input)
+        self.detector8 = []
+        for _ in self.priors8:
+            self.detector8.append(DetectionLayer(test_input.shape[1]))
+
+        # define detector criterions
+        self.criterion = DetectorCriterion(self.priors)
+
+    def get_priors(self, side_div, anchor_side, aspect_ratios=settings.aspect_ratios, side_res=256):
+        prior_tensors = []
+        xy = torch.arange(0,1,1/side_div)+1/side_div/2
+        yy, xx = torch.meshgrid(xy,xy)
+        for a in anchor_side:
+            for aspect in aspect_ratios:
+                w, h = torch.ones_like(yy)*a*np.sqrt(aspect), torch.ones_like(yy)*a/np.sqrt(aspect)
+                prior_tensor = torch.stack([yy, xx, h, w], dim=-1)
+                prior_tensors.append(prior_tensor)
+        return prior_tensors
+
+    def forward(self, input_):
+        features = self.backbone(input_)
+
+        detection16 = []
+        for detector in self.detector16:
+            detection16.append(detector(features))
+
+        features = self.downample(features)
+
+        detection8 = []
+        for detector in self.detector8:
+            detection8.append(detector(features))
+
+        return detection16 + detection8
+
+    def iteration(self, input_, target_):
+        detection = self.forward(input_)
+        loss = self.criterion(detection, target_)
+        return loss
+
+    def detect_objects(self, input_):
+        detection = self.forward(input_)
+        suppressed_boxies = self.nms(detection)
+        return suppressed_boxies
+
+    def nms(self, detections):
+        return [0]

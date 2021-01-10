@@ -36,3 +36,7 @@ schedulers.append(lr_scheduler.LambdaLR(optimizer_Detector, lr_lambda=detector_l
 for epoch in range(1, settings.gan_pretrain_epochs + 1):
     for batch_n, batch in enumerate(dataset):
         pass
+
+for epoch in range(1, settings.joint_train_epochs + 1):
+    for batch_n, batch in enumerate(dataset):
+        pass

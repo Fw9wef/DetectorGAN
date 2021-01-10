@@ -355,27 +355,30 @@ class DetectorCriterion(nn.Module):
         reg_preds = torch.cat([x['reg'].permute(0, 2, 3, 1).reshape(target_.shape[0], -1, 4) for x in input_], dim=0)
 
         for img_n, (objects_, clf_, reg_) in enumerate(zip(target_, clf_preds, reg_preds)):
-            prior_objects_iou = iou(self.priors, objects_) # (n_objects, n_prior_boxies)
+            prior_objects_iou = iou(objects_[:,1:], self.priors) # (n_objects, n_prior_boxies)
             _, best_iou_inds = prior_objects_iou.max(dim=1)
             prior_objects_iou[best_iou_inds] = 1.
             _, objects_for_each_prior = prior_objects_iou.max(dim=0)
-            targets_for_each_prior
-            positives = targets_for_each_prior > 0
+            clf_targets_for_each_prior = torch.where(objects_for_each_prior>0, target_[objects_for_each_prior,0], 0)
+            positives = clf_targets_for_each_prior > 0
             negatives = torch.logical_not(positives)
             n_positives = positives.sum()
             n_negatives = self.negative_ratio * n_positives
 
             # calculating positives loss for image
             pos_clf_preds, pos_reg_preds = clf_[positives], reg_[positives]
-            pos_clf_targets = targets_for_each_prior[positives]
-            clf_loss += torch.mean(self.clf_criterion(pos_clf_preds, pos_clf_targets.long()))
+            pos_clf_targets = clf_targets_for_each_prior[positives]
+            pos_clf_loss = self.clf_criterion(pos_clf_preds, pos_clf_targets.long())
             reg_loss += self.reg_criterion()    ###############
 
             # calculating negatives loss for image
-            neg_clf_preds, neg_reg_preds = clf_[negatives], reg_[negatives]
-            neg_clf_targets = targets_for_each_prior[negatives]
-            neg_clf_loss, _ = self.clf_criterion().sort(descending=True)
-            clf_loss += neg_clf_loss[:n_negatives]
+            neg_clf_preds, _ = clf_[negatives], reg_[negatives]
+            neg_clf_targets = clf_targets_for_each_prior[negatives]
+            neg_clf_loss, _ = self.clf_criterion(neg_clf_preds, neg_clf_targets).sort(descending=True)
+            neg_clf_loss = neg_clf_loss[:n_negatives]
+
+            # calculating mean classification loss for image
+            clf_loss += torch.mean(torch.cat(pos_clf_loss, neg_clf_loss))
 
         clf_loss /= target_.shape[0]
         reg_loss /= target_.shape[0]
@@ -384,7 +387,7 @@ class DetectorCriterion(nn.Module):
 
 
 class Detector(nn.Module):
-    def __init__(self, load_pretrained_detector = settings.load_pretrained_detector):
+    def __init__(self, load_pretrained_detector=settings.load_pretrained_detector):
         super(Detector, self).__init__()
         from torchvision.models import resnet34
         resnet_conv_layers = list(resnet34(pretrained = load_pretrained_detector).children())[-2]

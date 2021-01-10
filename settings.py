@@ -14,6 +14,7 @@ path_to_annotation = './ann'            # path to image annotation
 load_pretrained_detector = True         # load resnet34 pretrained weights?
 n_classes = 1                           # number of detectable classes
 gan_pretrain_epochs = 100               # number of epochs for gan pretraining
+joint_train_epochs = 100                # number of epoch for training gan and detector jointly
 negative_ratio = 3                      # hard negative mining ratio
 aspect_ratios = [1]                     # aspect ratios for anchor boxies
 reg_alpha = 1.                          # weight of regression loss
